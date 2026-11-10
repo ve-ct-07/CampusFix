@@ -1,5 +1,6 @@
-
 # CampusFix 🏫
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 CampusFix is a university campus maintenance and issue-management platform built with Python and Streamlit.
 
