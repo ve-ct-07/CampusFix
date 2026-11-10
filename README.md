@@ -238,3 +238,48 @@ CampusFix/
 ## Current Status
 
 Development prototype. The automated test suite currently contains 16 passing tests.
+
+## Application Workflow
+
+1. A student submits a maintenance report with a title, description and location.
+2. The local AI classifier analyzes the report and provides an initial category, severity and safety assessment.
+3. The duplicate detector searches for potentially related reports using semantic embeddings and location matching.
+4. Potential duplicates are presented to an administrator for review. Reports are never automatically merged.
+5. Administrators manage incident status, priority, maintenance-team assignment and safety responses.
+6. Students can track report progress and view the public-facing activity timeline.
+
+## Automated Testing
+
+CampusFix includes tests for:
+
+- Database operations and incident management
+- Duplicate candidate review and confirmation
+- Safety response history and privacy
+- Priority calculation
+- Student report submission
+- Administrator duplicate-review workflow
+
+Run locally:
+
+\`\`\`bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -v
+\`\`\`
+
+GitHub Actions automatically executes the test suite on pushes and pull requests targeting `main`.
+
+## Current Limitations
+
+- CampusFix is a development prototype, not a production campus deployment.
+- The application uses local SQLite storage.
+- Local AI classification and semantic embeddings depend on the configured Ollama service.
+- AI classifications are assessments and should be reviewed by administrators.
+- Duplicate suggestions require explicit administrator approval.
+- The current automated test suite uses mocked AI responses for predictable testing.
+
+## Future Improvements
+
+- Authentication and role-based access control
+- Production database deployment
+- Notifications for report status changes
+- Improved mobile interface
+- More comprehensive integration and load testing
