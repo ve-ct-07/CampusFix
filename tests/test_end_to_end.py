@@ -1,9 +1,33 @@
 from pathlib import Path
 
 import database.db as db
+import auth
 import pages.student_portal as student_portal
 
 from streamlit.testing.v1 import AppTest
+
+# Authentication was added after these tests were written. The only changes
+# to the original scenarios are: accounts are created and signed in through
+# the real login form before using the app, and audit records now hold the
+# signed-in administrator's email instead of a typed name.
+TEST_PASSWORD = "e2e test password"
+STUDENT_NAME = "Test Student"
+STUDENT_EMAIL = "student@campus.ac.in"
+ADMIN_NAME = "Test Administrator"
+ADMIN_EMAIL = "admin@campus.ac.in"
+
+
+def sign_in(at, email, password=TEST_PASSWORD):
+    at.text_input(key="login_email").set_value(email)
+    at.text_input(key="login_password").set_value(password)
+    at.button(key="FormSubmitter:login_form-Sign in").click().run()
+    assert len(at.exception) == 0, [e.message for e in at.exception]
+    assert len(at.radio) == 1, "Sign-in did not reach the application"
+
+
+def sign_out(at):
+    at.button(key="sign_out").click().run()
+    assert len(at.exception) == 0, [e.message for e in at.exception]
 
 
 def test_student_can_submit_report_end_to_end(monkeypatch, tmp_path):
@@ -16,6 +40,9 @@ def test_student_can_submit_report_end_to_end(monkeypatch, tmp_path):
         "SCHEMA_PATH",
         Path(__file__).parents[1] / "database" / "schema.sql",
     )
+
+    db.initialize_database()
+    student = auth.register_student(STUDENT_NAME, STUDENT_EMAIL, TEST_PASSWORD)
 
     # Mock local AI classification.
     prediction = {
@@ -49,6 +76,8 @@ def test_student_can_submit_report_end_to_end(monkeypatch, tmp_path):
     at.run()
 
     assert len(at.exception) == 0
+
+    sign_in(at, STUDENT_EMAIL)
 
     # Select the Student portal.
     at.radio[0].set_value("Student portal")
@@ -91,6 +120,9 @@ def test_student_can_submit_report_end_to_end(monkeypatch, tmp_path):
     assert issue["ai_method"] == "test_mock"
     assert issue["safety_risk"] == 0
 
+    # The report is owned by the signed-in student.
+    assert issue["submitted_by"] == student["user_id"]
+
     # No duplicate candidates should be created.
     with db.get_connection() as conn:
         candidate_count = conn.execute(
@@ -119,6 +151,7 @@ def test_duplicate_suggestion_requires_admin_confirmation(
     )
 
     db.initialize_database()
+    auth.register_student(STUDENT_NAME, STUDENT_EMAIL, TEST_PASSWORD)
 
     # Seed an existing report.
     existing_id = db.create_issue(
@@ -170,6 +203,8 @@ def test_duplicate_suggestion_requires_admin_confirmation(
     at.run()
 
     assert len(at.exception) == 0
+
+    sign_in(at, STUDENT_EMAIL)
 
     # Submit the new report through the student portal.
     at.radio[0].set_value("Student portal")
@@ -230,6 +265,8 @@ def test_admin_confirms_duplicate_through_dashboard(
     )
 
     db.initialize_database()
+    auth.register_student(STUDENT_NAME, STUDENT_EMAIL, TEST_PASSWORD)
+    auth.bootstrap_admin(ADMIN_NAME, ADMIN_EMAIL, TEST_PASSWORD)
 
     # Create two existing reports that could match the new report.
     first_id = db.create_issue(
@@ -297,6 +334,8 @@ def test_admin_confirms_duplicate_through_dashboard(
 
     assert len(at.exception) == 0
 
+    sign_in(at, STUDENT_EMAIL)
+
     # Submit a new report through the actual Student Portal.
     at.radio[0].set_value("Student portal")
     at.run()
@@ -338,6 +377,11 @@ def test_admin_confirms_duplicate_through_dashboard(
     assert db.get_issue_group(first_id) is None
     assert db.get_issue_group(second_id) is None
 
+    # Students cannot reach the dashboard; switch to the administrator.
+    assert "Admin dashboard" not in at.radio[0].options
+    sign_out(at)
+    sign_in(at, ADMIN_EMAIL)
+
     # Open the actual Admin Dashboard.
     at.radio[0].set_value("Admin dashboard")
     at.run()
@@ -353,17 +397,12 @@ def test_admin_confirms_duplicate_through_dashboard(
     )
     candidate_id = selected["candidate_id"]
 
-    admin_input = next(
-        widget for widget in at.text_input
-        if widget.key == f"duplicate_admin_{candidate_id}"
-    )
-
+    # The reviewer is the signed-in administrator; no name is typed.
     decision_input = next(
         widget for widget in at.selectbox
         if widget.key == f"duplicate_decision_{candidate_id}"
     )
 
-    admin_input.set_value("Test Administrator")
     decision_input.set_value("Confirm duplicate")
 
     submit_button = next(
@@ -414,12 +453,12 @@ def test_admin_confirms_duplicate_through_dashboard(
 
     assert decision_map[first_id] == (
         "Confirmed",
-        "Test Administrator",
+        ADMIN_EMAIL,
     )
 
     assert decision_map[second_id] == (
         "Rejected",
-        "Test Administrator",
+        ADMIN_EMAIL,
     )
 
     # Verify that the incident contains exactly two reports.

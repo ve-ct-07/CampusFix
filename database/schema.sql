@@ -237,5 +237,15 @@ CREATE INDEX IF NOT EXISTS idx_duplicate_review_new_issue
     ON duplicate_review_candidates(new_issue_id);
 
 -- ============================================================
+-- 8. Authentication (users table, issues.submitted_by,
+--    incident_activity.changed_by)
+--
+-- These are defined in database/migrations.py, not here, because
+-- existing tables cannot be altered with CREATE ... IF NOT EXISTS.
+-- initialize_database() applies this file first and then the
+-- migrations, so fresh and existing databases follow one path.
+-- ============================================================
+
+-- ============================================================
 -- END OF CONSOLIDATED SCHEMA
 -- ============================================================
