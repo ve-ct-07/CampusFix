@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Python environments
+.venv/
+venv/
+env/
+.env/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Uploaded files
+uploads/*
+!uploads/.gitkeep
+
+# SQLite databases and backups
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Test and coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor and operating system files
+.DS_Store
+.idea/
+.vscode/
+
+# Historical development snapshots
+database/db_before_public_safety_timeline.py
+database/grouping_methods.py
+database/schema_additions.sql
+database/schema_before_consolidation.sql
+modules/ai_classifier_backup.py
+modules/ai_classifier_before_rules.py
+pages/admin_dashboard_backup.py
+pages/admin_dashboard_before_ai_review.py
+pages/admin_dashboard_before_safety_ui.py
+pages/issue_tracking_backup.py
+README_PHASE3_PATCH.md
