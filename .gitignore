@@ -50,3 +50,4 @@ pages/admin_dashboard_before_ai_review.py
 pages/admin_dashboard_before_safety_ui.py
 pages/issue_tracking_backup.py
 README_PHASE3_PATCH.md
+.agents/
