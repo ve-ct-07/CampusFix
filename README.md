@@ -19,6 +19,81 @@ Students can report maintenance problems, while administrators can review report
 - Student-facing report tracking
 - SQLite-based persistent storage
 
+## Application Screenshots
+
+### Student Portal
+Students can submit maintenance reports with descriptions, locations and optional photographs.
+
+![Student Portal](docs/screenshots/student-portal.png)
+
+### Admin Dashboard
+Administrators can monitor campus incidents, review priorities, manage incident groups and inspect maintenance analytics.
+
+![Admin Dashboard](docs/screenshots/admin-dashboard.png)
+
+### SLA Monitoring
+Monitor open incidents against priority-based resolution targets and identify overdue maintenance requests.
+
+![SLA Monitoring](docs/screenshots/sla-monitoring.png)
+
+### Incident Management
+Review associated reports, update incident status and priority, assign maintenance teams and inspect the incident activity timeline.
+
+![Incident Management](docs/screenshots/incident-management.png)
+
+## System Architecture
+
+```mermaid
+flowchart TB
+    U[Students and Administrators]
+
+    subgraph UI["Streamlit Application"]
+        APP[app.py]
+        SP[Student Portal]
+        AD[Admin Dashboard]
+        IT[Issue Tracking]
+    end
+
+    subgraph CORE["Application Modules"]
+        AI[AI Classifier]
+        DD[Duplicate Detector]
+        PE[Priority Engine]
+        AN[Analytics]
+        DBL[Database Layer]
+    end
+
+    subgraph SERVICES["Local Services and Storage"]
+        OLLAMA[Ollama]
+        QWEN[Qwen 3.5 2B]
+        EMB[EmbeddingGemma 270M]
+        SQL[(SQLite Database)]
+    end
+
+    U --> APP
+    APP --> SP
+    APP --> AD
+    APP --> IT
+
+    SP --> AI
+    SP --> DD
+    SP --> PE
+
+    AD --> AN
+    AD --> DBL
+    IT --> DBL
+
+    AI --> OLLAMA
+    DD --> OLLAMA
+    OLLAMA --> QWEN
+    OLLAMA --> EMB
+
+    AI --> DBL
+    DD --> DBL
+    PE --> DBL
+    AN --> DBL
+    DBL --> SQL
+```
+
 ## Technology Stack
 
 - Python
