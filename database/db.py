@@ -3,6 +3,8 @@ import sqlite3
 from contextlib import contextmanager
 import json
 
+from database.migrations import run_migrations
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = PROJECT_ROOT / "campusfix.db"
 SCHEMA_PATH = PROJECT_ROOT / "database" / "schema.sql"
@@ -25,11 +27,19 @@ def get_connection():
 
 
 def initialize_database():
-    """Create all CampusFix tables and indexes if they do not exist."""
+    """Create all CampusFix tables and apply pending schema migrations.
+
+    The base schema only uses CREATE ... IF NOT EXISTS, so it never alters
+    existing data. Additive migrations (users table, issues.submitted_by,
+    incident_activity.changed_by) are then applied idempotently; a backup is
+    written first if the database already holds reports.
+    """
     with get_connection() as conn:
         conn.executescript(
             SCHEMA_PATH.read_text(encoding="utf-8")
         )
+
+    run_migrations(DB_PATH)
 
 
 def create_issue(
@@ -41,8 +51,14 @@ def create_issue(
     priority="Medium",
     image_path=None,
     ai_assessment=None,
+    submitted_by=None,
 ):
-    """Create a report and preserve its original AI triage assessment."""
+    """Create a report and preserve its original AI triage assessment.
+
+    ``submitted_by`` is the owning user's ID. It is optional so that
+    existing callers keep working; the authenticated UI always sets it via
+    ``database.access.submit_report``.
+    """
 
     assessment = ai_assessment or {}
 
@@ -57,9 +73,10 @@ def create_issue(
                 title, description, location, category, severity,
                 priority, image_path, ai_category, ai_severity,
                 secondary_hazards, ai_summary, ai_reason,
-                safety_risk, safety_risk_reason, ai_method
+                safety_risk, safety_risk_reason, ai_method,
+                submitted_by
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 title,
@@ -77,6 +94,7 @@ def create_issue(
                 int(bool(assessment.get("safety_risk", False))),
                 assessment.get("safety_risk_reason"),
                 assessment.get("method", "unknown"),
+                submitted_by,
             ),
         )
 
@@ -99,7 +117,14 @@ def get_issue(issue_id):
         return dict(row) if row else None
 
 
-def update_issue_status(issue_id, status, assigned_to=None):
+def update_issue_status(issue_id, status, assigned_to=None, changed_by=None):
+    """Update one report's status/assignment and log what changed.
+
+    Status and assignment behaviour is unchanged. Each field that actually
+    changes is recorded in ``issue_activity`` in the same transaction, with
+    ``changed_by`` (the administrator's identity; optional so existing
+    callers keep working).
+    """
     allowed = {
         "Submitted",
         "Under Review",
@@ -114,7 +139,7 @@ def update_issue_status(issue_id, status, assigned_to=None):
 
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT status FROM issues WHERE issue_id = ?",
+            "SELECT status, assigned_to FROM issues WHERE issue_id = ?",
             (issue_id,),
         ).fetchone()
 
@@ -122,6 +147,7 @@ def update_issue_status(issue_id, status, assigned_to=None):
             raise ValueError(f"Issue {issue_id} does not exist")
 
         previous_status = row["status"]
+        previous_assignee = row["assigned_to"]
 
         if status == "Resolved" and previous_status != "Resolved":
             conn.execute(
@@ -156,6 +182,44 @@ def update_issue_status(issue_id, status, assigned_to=None):
                 """,
                 (assigned_to, issue_id),
             )
+
+        # Record only the fields that actually changed.
+        new_assignee = (
+            assigned_to if assigned_to is not None else previous_assignee
+        )
+        changes = (
+            ("Status", previous_status, status),
+            ("Assigned team", previous_assignee, new_assignee),
+        )
+        for event_type, old_value, new_value in changes:
+            if old_value != new_value:
+                conn.execute(
+                    """
+                    INSERT INTO issue_activity
+                        (issue_id, event_type, old_value, new_value,
+                         changed_by)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (issue_id, event_type, old_value, new_value, changed_by),
+                )
+
+
+def get_issue_activity(issue_id):
+    """Return the administrative change history of one report, newest first."""
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT activity_id, issue_id, event_type,
+                   old_value, new_value, changed_by, created_at
+            FROM issue_activity
+            WHERE issue_id = ?
+            ORDER BY created_at DESC, activity_id DESC
+            """,
+            (issue_id,),
+        ).fetchall()
+
+        return [dict(row) for row in rows]
 
 
 def save_issue_embedding(issue_id, model_name, embedding):
@@ -278,8 +342,14 @@ def list_group_members(group_id):
         return [dict(row) for row in rows]
 
 
-def update_incident_group(group_id, status, priority, assigned_team):
-    """Update an incident, synchronize reports, and record actual changes."""
+def update_incident_group(
+    group_id, status, priority, assigned_team, changed_by=None,
+):
+    """Update an incident, synchronize reports, and record actual changes.
+
+    ``changed_by`` (optional) records the administrator responsible for the
+    change in the activity log. It is never shown to students.
+    """
 
     allowed_statuses = {
         "Submitted", "Under Review", "Assigned",
@@ -384,14 +454,16 @@ def update_incident_group(group_id, status, priority, assigned_team):
                 conn.execute(
                     """
                     INSERT INTO incident_activity
-                        (group_id, event_type, old_value, new_value)
-                    VALUES (?, ?, ?, ?)
+                        (group_id, event_type, old_value, new_value,
+                         changed_by)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
                     (
                         group_id,
                         event_type,
                         old_value,
                         new_value,
+                        changed_by,
                     ),
                 )
 
@@ -403,7 +475,7 @@ def get_incident_activity(group_id):
         rows = conn.execute(
             """
             SELECT activity_id, group_id, event_type,
-                   old_value, new_value, created_at
+                   old_value, new_value, changed_by, created_at
             FROM incident_activity
             WHERE group_id = ?
             ORDER BY created_at DESC, activity_id DESC
@@ -1375,3 +1447,209 @@ def list_duplicate_review_history(limit=100):
         ).fetchall()
 
         return [dict(row) for row in rows]
+
+
+# ======================================================================
+# User accounts
+#
+# Public lookups never return password hashes. The only function that
+# returns a hash is get_credentials_by_email(), which exists solely for
+# password verification during login. All SQL is parameterized.
+# ======================================================================
+
+USER_ROLES = ("student", "admin")
+
+_PUBLIC_USER_COLUMNS = (
+    "user_id, name, email, role, is_active, created_at, last_login_at"
+)
+
+
+def normalize_email(email):
+    """Trim surrounding whitespace and lower-case an email address."""
+    if not isinstance(email, str):
+        return ""
+    return email.strip().lower()
+
+
+def _public_user(row):
+    if row is None:
+        return None
+    user = dict(row)
+    user["is_active"] = bool(user["is_active"])
+    return user
+
+
+def create_user(name, email, password_hash, role="student"):
+    """Insert a user and return the new user_id.
+
+    Validation of the email domain and password policy belongs to the
+    ``auth`` package; this function enforces the storage invariants
+    (normalized email, permitted role, Argon2id hash). The database CHECK
+    constraints enforce the same rules a second time. Raises
+    ``sqlite3.IntegrityError`` for a duplicate email.
+    """
+    if role not in USER_ROLES:
+        raise ValueError(f"Unsupported role: {role!r}")
+
+    name = (name or "").strip() if isinstance(name, str) else ""
+    if not name:
+        raise ValueError("A name is required.")
+
+    if not isinstance(password_hash, str) or not password_hash.startswith(
+        "$argon2id$"
+    ):
+        raise ValueError("password_hash must be an Argon2id hash.")
+
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "INSERT INTO users (name, email, password_hash, role) "
+            "VALUES (?, ?, ?, ?)",
+            (name, normalize_email(email), password_hash, role),
+        )
+        return cursor.lastrowid
+
+
+def get_user_by_id(user_id):
+    """Return a user's public fields, or None."""
+    if isinstance(user_id, bool):
+        return None
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        return None
+
+    with get_connection() as conn:
+        row = conn.execute(
+            f"SELECT {_PUBLIC_USER_COLUMNS} FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        return _public_user(row)
+
+
+def get_user_by_email(email):
+    """Return a user's public fields by (normalized) email, or None."""
+    normalized = normalize_email(email)
+    if not normalized:
+        return None
+
+    with get_connection() as conn:
+        row = conn.execute(
+            f"SELECT {_PUBLIC_USER_COLUMNS} FROM users WHERE email = ?",
+            (normalized,),
+        ).fetchone()
+        return _public_user(row)
+
+
+def get_credentials_by_email(email):
+    """Return the data needed to verify a login, or None.
+
+    Returns user_id, password_hash and is_active. For use by
+    ``auth.authentication`` only; never pass the result to the UI.
+    """
+    normalized = normalize_email(email)
+    if not normalized:
+        return None
+
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT user_id, password_hash, is_active
+            FROM users
+            WHERE email = ?
+            """,
+            (normalized,),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    return {
+        "user_id": row["user_id"],
+        "password_hash": row["password_hash"],
+        "is_active": bool(row["is_active"]),
+    }
+
+
+def record_successful_login(user_id, new_password_hash=None):
+    """Stamp last_login_at and optionally store an upgraded hash.
+
+    Also clears the legacy failed_login_attempts / locked_until columns,
+    which are no longer used: per-account lockout was removed because it
+    let anyone lock another user's account.
+    """
+    if new_password_hash is not None and not str(new_password_hash).startswith(
+        "$argon2id$"
+    ):
+        raise ValueError("password_hash must be an Argon2id hash.")
+
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE users
+            SET failed_login_attempts = 0,
+                locked_until = NULL,
+                last_login_at = CURRENT_TIMESTAMP,
+                password_hash = COALESCE(?, password_hash)
+            WHERE user_id = ?
+            """,
+            (new_password_hash, user_id),
+        )
+
+
+def admin_exists():
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM users WHERE role = 'admin')"
+        ).fetchone()[0] == 1
+
+
+class AdminAlreadyExistsError(ValueError):
+    pass
+
+
+class EmailAlreadyRegisteredError(ValueError):
+    pass
+
+
+def create_first_admin(name, email, password_hash):
+    """Create the first administrator atomically and return its user_id.
+
+    The existence checks and the insert run in one BEGIN IMMEDIATE
+    transaction, so two concurrent bootstrap runs cannot both succeed.
+    Existing accounts are never promoted.
+    """
+    name = (name or "").strip() if isinstance(name, str) else ""
+    if not name:
+        raise ValueError("A name is required.")
+    if not isinstance(password_hash, str) or not password_hash.startswith(
+        "$argon2id$"
+    ):
+        raise ValueError("password_hash must be an Argon2id hash.")
+
+    normalized = normalize_email(email)
+
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+
+        if conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM users WHERE role = 'admin')"
+        ).fetchone()[0]:
+            raise AdminAlreadyExistsError(
+                "An administrator account already exists. The bootstrap "
+                "command can only be used once."
+            )
+
+        if conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM users WHERE email = ?)",
+            (normalized,),
+        ).fetchone()[0]:
+            raise EmailAlreadyRegisteredError(
+                "This email already belongs to an account. Existing "
+                "accounts are never promoted; use a different email."
+            )
+
+        return conn.execute(
+            "INSERT INTO users (name, email, password_hash, role) "
+            "VALUES (?, ?, ?, 'admin')",
+            (name, normalized, password_hash),
+        ).lastrowid

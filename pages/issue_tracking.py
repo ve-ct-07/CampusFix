@@ -1,5 +1,5 @@
 import streamlit as st
-from database.db import get_student_tracking_data
+from database.access import get_report_tracking, list_my_reports
 
 
 STATUS_STEPS = [
@@ -11,11 +11,39 @@ STATUS_STEPS = [
 ]
 
 
-def render_issue_tracking():
+def render_issue_tracking(user):
     st.header("Track Your Campus Issue")
-    st.caption(
-        "Enter your CampusFix reference ID to view the latest progress."
-    )
+
+    is_admin = user["role"] == "admin"
+
+    if is_admin:
+        st.caption(
+            "Administrators can track any report by its reference ID."
+        )
+    else:
+        st.caption(
+            "You can track the reports submitted from your account."
+        )
+
+    my_reports = list_my_reports(user)
+
+    if my_reports:
+        st.markdown("#### Your reports")
+        st.dataframe(
+            [
+                {
+                    "Reference": f"CF-{report['issue_id']:04d}",
+                    "Title": report["title"],
+                    "Status": report["status"],
+                    "Submitted": report["created_at"],
+                }
+                for report in my_reports
+            ],
+            width="stretch",
+            hide_index=True,
+        )
+    elif not is_admin:
+        st.info("You have not submitted any reports yet.")
 
     with st.form("track_issue_form"):
         reference = st.text_input(
@@ -43,10 +71,12 @@ def render_issue_tracking():
         st.error("Enter a valid reference, such as CF-0002.")
         return
 
-    data = get_student_tracking_data(issue_id)
+    # Ownership is enforced in the database query. A report that does not
+    # exist and one belonging to someone else give the same response.
+    data = get_report_tracking(user, issue_id)
 
     if data is None:
-        st.warning("No report found for that reference.")
+        st.warning("No report found for that reference in your account.")
         return
 
     issue = data["issue"]

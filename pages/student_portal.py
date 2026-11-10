@@ -2,17 +2,17 @@ from pathlib import Path
 import uuid
 import streamlit as st
 
-from database.db import (
-    create_issue,
-    list_issues,
-    save_duplicate_candidates,
+from database.access import (
+    list_reports_for_duplicate_check,
+    record_duplicate_candidates,
+    submit_report,
 )
 from modules.ai_classifier import classify_issue
 from modules.duplicate_detector import find_similar_issues
 from modules.priority_engine import calculate_priority
 
 
-def render_student_portal():
+def render_student_portal(user):
     st.header("Report a campus issue")
     st.caption("Submit a clear description and location. Do not include personal or sensitive information.")
 
@@ -40,8 +40,14 @@ def render_student_portal():
     with st.spinner("Analyzing report and checking for similar issues..."):
         prediction = classify_issue(description, image_path)
         try:
+            # Comparison happens server-side only; other reports are
+            # never displayed to the student.
             possible_duplicates = find_similar_issues(
-                title, description, list_issues(), location=location, threshold=0.82
+                title,
+                description,
+                list_reports_for_duplicate_check(user),
+                location=location,
+                threshold=0.82,
             )
         except Exception:
             possible_duplicates = []
@@ -53,7 +59,8 @@ def render_student_portal():
         duplicate_count=0,
     )
 
-    issue_id = create_issue(
+    issue_id = submit_report(
+        user,
         title=title.strip(),
         description=description.strip(),
         location=location.strip(),
@@ -68,7 +75,8 @@ def render_student_portal():
 
     if possible_duplicates:
         try:
-            saved_candidates = save_duplicate_candidates(
+            saved_candidates = record_duplicate_candidates(
+                user,
                 issue_id,
                 possible_duplicates,
             )
@@ -89,22 +97,16 @@ def render_student_portal():
                "AI assessments are suggestions and require administrator review.")
 
     if possible_duplicates:
+        # Details of other students' reports (titles, locations, IDs) are
+        # deliberately not shown. Administrators review the matches.
         st.warning(
-            "Potentially similar reports were found. "
-            "They have not been merged automatically."
+            "This issue may already have been reported at this location. "
+            "Reports are never merged automatically; an administrator "
+            "will review the possible match."
         )
 
         if saved_candidates:
-            st.info(
-                f"{saved_candidates} potential match(es) saved "
-                "for administrator review."
-            )
-
-        for match in possible_duplicates:
-            st.write(
-                f"CF-{match['issue_id']:04d} · {match['title']} · "
-                f"{match['location']} · similarity {match['similarity']:.0%}"
-            )
+            st.info("Your report has been queued for duplicate review.")
 
     st.markdown("#### AI Safety Assessment")
 

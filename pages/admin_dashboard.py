@@ -2,8 +2,11 @@ import json
 import pandas as pd
 import streamlit as st
 
-from database.db import (
+from database.access import (
+    AuthorizationError,
+    require_admin,
     list_issues,
+    get_issue_activity,
     update_issue_status,
     list_incident_groups,
     list_group_members,
@@ -22,7 +25,7 @@ from database.db import (
 
 
 
-def render_ai_review_panel(issues):
+def render_ai_review_panel(issues, user):
     """Display stored AI triage assessments for administrator review."""
 
     st.subheader("AI Triage Review")
@@ -143,7 +146,7 @@ def render_ai_review_panel(issues):
             if safety_risk:
                 st.markdown("#### Safety Response")
 
-                linked_group = get_issue_group(issue_id)
+                linked_group = get_issue_group(user, issue_id)
 
                 if linked_group:
                     history_args = {
@@ -161,10 +164,7 @@ def render_ai_review_panel(issues):
                     target_args = {"issue_id": issue_id}
 
                 with st.form(key=f"safety_response_form_{issue_id}"):
-                    administrator = st.text_input(
-                        "Administrator name",
-                        placeholder="Enter your name",
-                    )
+                    st.caption(f"Recorded as: {user['email']}")
 
                     action_options = [
                         "Notified maintenance team",
@@ -200,9 +200,7 @@ def render_ai_review_panel(issues):
                     )
 
                     if save_response:
-                        if not administrator.strip():
-                            st.error("Enter the administrator name.")
-                        elif not action_details.strip() and action == "Other":
+                        if not action_details.strip() and action == "Other":
                             st.error("Describe the action taken.")
                         else:
                             recorded_action = action
@@ -210,8 +208,10 @@ def render_ai_review_panel(issues):
                                 recorded_action += ": " + action_details.strip()
 
                             try:
+                                # The signed-in administrator is recorded
+                                # as acknowledged_by by the access layer.
                                 record_safety_response(
-                                    acknowledged_by=administrator,
+                                    user,
                                     action_taken=recorded_action,
                                     notified_party=notified_party,
                                     notes=response_notes,
@@ -231,7 +231,7 @@ def render_ai_review_panel(issues):
                 st.markdown("#### Safety Response History")
 
                 response_history = get_safety_response_history(
-                    **history_args
+                    user, **history_args
                 )
 
                 if not response_history:
@@ -263,7 +263,7 @@ def render_ai_review_panel(issues):
             )
 
 
-def render_duplicate_review_queue():
+def render_duplicate_review_queue(user):
     """Display duplicate suggestions grouped by their existing incident."""
 
     st.divider()
@@ -273,7 +273,7 @@ def render_duplicate_review_queue():
         "automatically."
     )
 
-    pending = list_pending_duplicate_reviews()
+    pending = list_pending_duplicate_reviews(user)
 
     if not pending:
         st.success("No pending duplicate reviews.")
@@ -432,10 +432,7 @@ def render_duplicate_review_queue():
                     )
 
                 with st.form(key=f"duplicate_review_{candidate_id}"):
-                    administrator = st.text_input(
-                        "Administrator name",
-                        key=f"duplicate_admin_{candidate_id}",
-                    )
+                    st.caption(f"Reviewing as: {user['email']}")
 
                     decision = st.selectbox(
                         "Review decision",
@@ -462,10 +459,7 @@ def render_duplicate_review_queue():
                     )
 
                     if submitted:
-                        if not administrator.strip():
-                            st.error("Enter the administrator name.")
-
-                        elif (
+                        if (
                             decision == "Confirm duplicate"
                             and is_resolved
                             and not reopen
@@ -478,8 +472,8 @@ def render_duplicate_review_queue():
                             try:
                                 if decision == "Confirm duplicate":
                                     result_group = confirm_duplicate_candidate(
+                                        user,
                                         candidate_id,
-                                        administrator,
                                         reopen_resolved=reopen,
                                     )
 
@@ -493,9 +487,9 @@ def render_duplicate_review_queue():
                                     # this same incident, not just one report.
                                     for candidate in candidates:
                                         review_duplicate_candidate(
+                                            user,
                                             candidate["candidate_id"],
                                             "Rejected",
-                                            administrator,
                                         )
 
                                     st.success(
@@ -505,9 +499,9 @@ def render_duplicate_review_queue():
 
                                 else:
                                     review_duplicate_candidate(
+                                        user,
                                         candidate_id,
                                         "New Incident",
-                                        administrator,
                                     )
 
                                     st.success(
@@ -524,7 +518,7 @@ def render_duplicate_review_queue():
                                 )
 
 
-def render_duplicate_review_history():
+def render_duplicate_review_history(user):
     """Display the permanent audit trail of completed duplicate reviews."""
 
     st.divider()
@@ -533,7 +527,7 @@ def render_duplicate_review_history():
         "Completed administrator decisions are retained for auditing."
     )
 
-    history = list_duplicate_review_history(limit=100)
+    history = list_duplicate_review_history(user, limit=100)
 
     if not history:
         st.info("No duplicate reviews have been completed yet.")
@@ -591,12 +585,20 @@ def render_duplicate_review_history():
                 )
 
 
-def render_admin_dashboard():
+def render_admin_dashboard(user):
+
+    # Defence in depth: navigation already hides this page from students,
+    # and every data call below re-checks the administrator role.
+    try:
+        require_admin(user)
+    except AuthorizationError:
+        st.error("Administrator access is required to view this page.")
+        return
 
     st.header("Maintenance Administration")
     st.caption("CampusFix | Incident Management Centre")
 
-    issues = list_issues()
+    issues = list_issues(user)
 
     if not issues:
         st.info("No reports submitted yet.")
@@ -605,20 +607,20 @@ def render_admin_dashboard():
     df = pd.DataFrame(issues)
 
     # AI assessment review
-    render_ai_review_panel(issues)
+    render_ai_review_panel(issues, user)
 
     # Persistent duplicate review queue
-    render_duplicate_review_queue()
+    render_duplicate_review_queue(user)
 
     # Completed duplicate-review audit trail
-    render_duplicate_review_history()
+    render_duplicate_review_history(user)
 
     st.divider()
 
     # Incident analytics
     st.subheader("Campus Maintenance Analytics")
 
-    analytics = get_incident_analytics()
+    analytics = get_incident_analytics(user)
 
     c1, c2, c3, c4 = st.columns(4)
 
@@ -714,7 +716,7 @@ def render_admin_dashboard():
         "resolution targets."
     )
 
-    sla_incidents = get_sla_incidents()
+    sla_incidents = get_sla_incidents(user)
 
     if not sla_incidents:
         st.success("No open incidents. All current incidents are resolved.")
@@ -779,7 +781,7 @@ def render_admin_dashboard():
     # Incident groups
     st.subheader("Incident Groups")
 
-    groups = list_incident_groups()
+    groups = list_incident_groups(user)
 
     grouped_issue_ids = set()
 
@@ -790,7 +792,7 @@ def render_admin_dashboard():
         for group in groups:
 
             group_id = group["group_id"]
-            members = list_group_members(group_id)
+            members = list_group_members(user, group_id)
 
             grouped_issue_ids.update(
                 issue["issue_id"] for issue in members
@@ -904,6 +906,7 @@ def render_admin_dashboard():
 
                         try:
                             update_incident_group(
+                                user,
                                 group_id,
                                 new_status,
                                 new_priority,
@@ -947,7 +950,7 @@ def render_admin_dashboard():
                 st.divider()
                 st.markdown("#### Incident Activity Timeline")
 
-                activity = get_incident_activity(group_id)
+                activity = get_incident_activity(user, group_id)
 
                 if not activity:
                     st.info(
@@ -966,7 +969,11 @@ def render_admin_dashboard():
 
                         st.write(f"{old} → {new}")
 
-                        st.caption(event["created_at"])
+                        changed_by = event.get("changed_by")
+                        st.caption(
+                            f"{event['created_at']} · by {changed_by}"
+                            if changed_by else event["created_at"]
+                        )
 
     # All reports
     st.subheader("All Submitted Reports")
@@ -983,7 +990,7 @@ def render_admin_dashboard():
                 "status",
             ]
         ],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -1051,6 +1058,7 @@ def render_admin_dashboard():
         if st.button("Save Individual Report Changes", type="primary"):
 
             update_issue_status(
+                user,
                 selected_id,
                 new_status,
                 assignee.strip() or None,
@@ -1058,3 +1066,17 @@ def render_admin_dashboard():
 
             st.success("Report updated successfully.")
             st.rerun()
+
+        # Administrative change history for this report (admin only).
+        history = get_issue_activity(user, selected_id)
+
+        if history:
+            st.markdown("#### Report Change History")
+            for event in history:
+                old = event["old_value"] or "Unassigned"
+                new = event["new_value"] or "Unassigned"
+                by = event["changed_by"] or "system"
+                st.caption(
+                    f"{event['created_at']} · {event['event_type']}: "
+                    f"{old} → {new} · by {by}"
+                )
