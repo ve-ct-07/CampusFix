@@ -119,7 +119,7 @@ No paid AI API key is required.
 Clone the repository:
 
 ```bash
-git clone <YOUR_REPOSITORY_URL>
+git clone https://github.com/ve-ct-07/CampusFix.git
 cd CampusFix
 ```
 
